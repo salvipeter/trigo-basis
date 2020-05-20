@@ -49,6 +49,7 @@ private:
     using Normal = OpenMesh::Vec3d;
     VertexTraits {
       double mean;              // approximated mean curvature
+      double u, v;              // parameters (for Bezier surfaces)
     };
   };
   using MyMesh = OpenMesh::TriMesh_ArrayKernelT<MyTraits>;
@@ -63,8 +64,12 @@ private:
   void updateMeanCurvature(bool update_min_max = true);
 
   // Bezier
-  static void bernsteinAll(size_t n, double u, std::vector<double> &coeff);
-  void generateMesh();
+  Vec evaluate(double u, double v, size_t derivatives,
+               std::vector<std::vector<Vec>> &der);
+  Vec evaluate(double u, double v);
+  void generateMesh(size_t resolution);
+  void elevateU();
+  void elevateV();
 
   // Visualization
   void setupCamera();
@@ -89,6 +94,7 @@ private:
   // Bezier
   size_t degree[2];
   std::vector<Vec> control_points;
+  bool trigonometric_basis;
 
   // Visualization
   double mean_min, mean_max, cutoff_ratio;

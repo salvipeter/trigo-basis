@@ -28,6 +28,7 @@
 
 MyViewer::MyViewer(QWidget *parent) :
   QGLViewer(parent), model_type(ModelType::NONE),
+  trigonometric_basis(false),
   mean_min(0.0), mean_max(0.0), cutoff_ratio(0.05),
   show_control_points(true), show_solid(true), show_wireframe(false),
   visualization(Visualization::PLAIN), slicing_dir(0, 0, 1), slicing_scaling(1),
@@ -115,6 +116,26 @@ double MyViewer::voronoiWeight(MyViewer::MyMesh::HalfedgeHandle in_he) {
 
 #ifndef BETTER_MEAN_CURVATURE
 void MyViewer::updateMeanCurvature(bool update_min_max) {
+  if (model_type == ModelType::BEZIER_SURFACE) {
+    for (auto v : mesh.vertices()) {
+      std::vector<std::vector<Vec>> der;
+      evaluate(mesh.data(v).u, mesh.data(v).v, 2, der);
+      auto E = der[1][0].squaredNorm();
+      auto F = der[1][0] * der[0][1];
+      auto G = der[0][1].squaredNorm();
+      auto n = (der[1][0] ^ der[0][1]).unit();
+      auto L = n * der[2][0];
+      auto M = n * der[1][1];
+      auto N = n * der[0][2];
+      mesh.data(v).mean = (N * E - 2 * M * F + L * G) / (2 * (E * G - F * F));
+      // mesh.data(v).gauss = (L * N - M * M) / (E * G - F * F);
+    }
+
+    if (update_min_max)
+      updateMeanMinMax();
+    return;
+  }
+
   std::map<MyMesh::FaceHandle, double> face_area;
   std::map<MyMesh::VertexHandle, double> vertex_area;
 
@@ -288,6 +309,19 @@ void MyViewer::fairMesh() {
 }
 
 void MyViewer::updateVertexNormals() {
+  if (model_type == ModelType::BEZIER_SURFACE) {
+    for (auto v : mesh.vertices()) {
+      std::vector<std::vector<Vec>> der;
+      evaluate(mesh.data(v).u, mesh.data(v).v, 1, der);
+      Vector n(static_cast<double *>(der[0][1] ^ der[1][0]));
+      double len = n.length();
+      if (len != 0.0)
+        n /= len;
+      mesh.set_normal(v, n);
+    }
+    return;
+  }
+
   // Weights according to:
   //   N. Max, Weights for computing vertex normals from facet normals.
   //     Journal of Graphics Tools, Vol. 4(2), 1999.
@@ -310,7 +344,7 @@ void MyViewer::updateVertexNormals() {
 
 void MyViewer::updateMesh(bool update_mean_range) {
   if (model_type == ModelType::BEZIER_SURFACE)
-    generateMesh();
+    generateMesh(50);
   mesh.request_face_normals(); mesh.request_vertex_normals();
   mesh.update_face_normals(); //mesh.update_vertex_normals();
   updateVertexNormals();
@@ -643,6 +677,26 @@ void MyViewer::keyPressEvent(QKeyEvent *e) {
       fairMesh();
       update();
       break;
+    case Qt::Key_U:
+      elevateU();
+      updateMesh();
+      update();
+      break;
+    case Qt::Key_V:
+      elevateV();
+      updateMesh();
+      update();
+      break;
+    case Qt::Key_T:
+      trigonometric_basis = true;
+      updateMesh();
+      update();
+      break;
+    case Qt::Key_B:
+      trigonometric_basis = false;
+      updateMesh();
+      update();
+      break;
     default:
       QGLViewer::keyPressEvent(e);
     }
@@ -674,7 +728,7 @@ Vec MyViewer::intersectLines(const Vec &ap, const Vec &ad, const Vec &bp, const 
   return ap + s * ad;
 }
 
-void MyViewer::bernsteinAll(size_t n, double u, std::vector<double> &coeff) {
+static void bernstein(size_t n, double u, std::vector<double> &coeff) {
   coeff.clear(); coeff.reserve(n + 1);
   coeff.push_back(1.0);
   double u1 = 1.0 - u;
@@ -689,25 +743,67 @@ void MyViewer::bernsteinAll(size_t n, double u, std::vector<double> &coeff) {
   }
 }
 
-void MyViewer::generateMesh() {
-  size_t resolution = 30;
+static void bernstein(size_t n, double u, size_t derivatives,
+                      std::vector<std::vector<double>> &coeffs) {
+  // Assumes derivatives <= n
+  std::vector<double> coeff;
+  bernstein(n, u, coeff);
+  coeffs.clear();
+  coeffs.push_back(coeff);
+  if (derivatives == 0)
+    return;
 
-  mesh.clear();
-  std::vector<MyMesh::VertexHandle> handles, tri;
+  std::vector<std::vector<double>> rec;
+  bernstein(n - 1, u, derivatives - 1, rec);
+  for (size_t i = 1; i <= derivatives; ++i) {
+    const auto &last = rec[i-1];
+    std::vector<double> tmp;
+    tmp.push_back(n * -last[0]);
+    for (size_t j = 1; j < n; ++j)
+      tmp.push_back(n * (last[j-1] - last[j]));
+    tmp.push_back(n * last[n-1]);
+    coeffs.push_back(tmp);
+  }
+}
+
+Vec MyViewer::evaluate(double u, double v, size_t derivatives,
+                       std::vector<std::vector<Vec>> &der) {
   size_t n = degree[0], m = degree[1];
-
-  std::vector<double> coeff_u, coeff_v;
-  for (size_t i = 0; i < resolution; ++i) {
-    double u = (double)i / (double)(resolution - 1);
-    bernsteinAll(n, u, coeff_u);
-    for (size_t j = 0; j < resolution; ++j) {
-      double v = (double)j / (double)(resolution - 1);
-      bernsteinAll(m, v, coeff_v);
-      Vec p(0.0, 0.0, 0.0);
+  std::vector<std::vector<double>> coeff_u, coeff_v;
+  if (trigonometric_basis && n % 2 == 1 && m % 2 == 1) {
+    // TODO
+  } else {
+    bernstein(n, u, derivatives, coeff_u);
+    bernstein(m, v, derivatives, coeff_v);
+  }
+  der.resize(derivatives + 1);
+  for (size_t i = 0; i <= derivatives; ++i)
+    der[i] = std::vector<Vec>(derivatives + 1, Vec(0, 0, 0));
+  for (size_t i = 0; i <= derivatives; ++i)
+    for (size_t j = 0; j <= derivatives; ++j)
       for (size_t k = 0, index = 0; k <= n; ++k)
         for (size_t l = 0; l <= m; ++l, ++index)
-          p += control_points[index] * coeff_u[k] * coeff_v[l];
+          der[i][j] += control_points[index] * coeff_u[i][k] * coeff_v[j][l];
+  return der[0][0];
+}
+
+Vec MyViewer::evaluate(double u, double v) {
+  static std::vector<std::vector<Vec>> dummy;
+  return evaluate(u, v, 0, dummy);
+}
+
+void MyViewer::generateMesh(size_t resolution) {
+  mesh.clear();
+  std::vector<MyMesh::VertexHandle> handles, tri;
+
+  for (size_t i = 0; i < resolution; ++i) {
+    double u = (double)i / (double)(resolution - 1);
+    for (size_t j = 0; j < resolution; ++j) {
+      double v = (double)j / (double)(resolution - 1);
+      auto p = evaluate(u, v);
       handles.push_back(mesh.add_vertex(Vector(static_cast<double *>(p))));
+      mesh.data(handles.back()).u = u;
+      mesh.data(handles.back()).v = v;
     }
   }
   for (size_t i = 0; i < resolution - 1; ++i)
@@ -723,6 +819,37 @@ void MyViewer::generateMesh() {
       tri.push_back(handles[(i + 1) * resolution + j + 1]);
       mesh.add_face(tri);
     }
+}
+
+void MyViewer::elevateU() {
+  std::vector<Vec> tmp;
+  for (size_t j = 0; j <= degree[1]; ++j)
+    tmp.push_back(control_points[j]);
+  for (size_t i = 1, index = degree[1] + 1; i <= degree[0]; ++i) {
+    double ratio = (double)i / (degree[0] + 1);
+    for (size_t j = 0; j <= degree[1]; ++j, ++index)
+      tmp.push_back(control_points[index-degree[1]-1] * ratio +
+                    control_points[index] * (1 - ratio));
+  }
+  for (size_t j = 0, base = degree[0] * (degree[1] + 1); j <= degree[1]; ++j)
+    tmp.push_back(control_points[base+j]);
+  control_points = tmp;
+  degree[0]++;
+}
+
+void MyViewer::elevateV() {
+  std::vector<Vec> tmp;
+  for (size_t i = 0, index = 0; i <= degree[0]; ++i) {
+    tmp.push_back(control_points[index++]);
+    for (size_t j = 1; j <= degree[1]; ++j, ++index) {
+      double ratio = (double)j / (degree[1] + 1);
+      tmp.push_back(control_points[index-1] * ratio +
+                    control_points[index] * (1 - ratio));
+    }
+    tmp.push_back(control_points[index-1]);
+  }
+  control_points = tmp;
+  degree[1]++;
 }
 
 void MyViewer::mouseMoveEvent(QMouseEvent *e) {
@@ -775,6 +902,10 @@ QString MyViewer::helpString() const {
                "<li>&nbsp;S: Toggle solid (filled polygon) visualization</li>"
                "<li>&nbsp;W: Toggle wireframe visualization</li>"
                "<li>&nbsp;F: Fair mesh</li>"
+               "<li>&nbsp;U: Elevate U degree (Bézier surface)</li>"
+               "<li>&nbsp;V: Elevate V degree (Bézier surface)</li>"
+               "<li>&nbsp;T: Change to trigonometric basis (only odd degrees)</li>"
+               "<li>&nbsp;B: Change to Bernstein basis</li>"
                "</ul>"
                "<p>There is also a simple selection and movement interface, enabled "
                "only when the wireframe/controlnet is displayed: a mesh vertex can be selected "
