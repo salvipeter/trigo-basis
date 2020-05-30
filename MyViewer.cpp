@@ -20,6 +20,7 @@
 #endif
 
 #include "MyViewer.h"
+#include "trigo-basis.hh"
 
 #ifdef _WIN32
 #define GL_CLAMP_TO_EDGE 0x812F
@@ -37,6 +38,7 @@ MyViewer::MyViewer(QWidget *parent) :
   setSelectRegionWidth(10);
   setSelectRegionHeight(10);
   axes.shown = false;
+  trigoinit("trigo.tab");
 }
 
 MyViewer::~MyViewer() {
@@ -553,7 +555,7 @@ void MyViewer::drawAxes() const {
 
 void MyViewer::drawWithNames() {
   if (axes.shown)
-    return drawAxesWithNames();
+    return;//return drawAxesWithNames();
 
   switch (model_type) {
   case ModelType::NONE: break;
@@ -770,8 +772,9 @@ Vec MyViewer::evaluate(double u, double v, size_t derivatives,
                        std::vector<std::vector<Vec>> &der) {
   size_t n = degree[0], m = degree[1];
   std::vector<std::vector<double>> coeff_u, coeff_v;
-  if (trigonometric_basis && n % 2 == 1 && m % 2 == 1) {
-    // TODO
+  if (trigonometric_basis) {
+    trigobasis(n, u, derivatives, coeff_u);
+    trigobasis(m, v, derivatives, coeff_v);
   } else {
     bernstein(n, u, derivatives, coeff_u);
     bernstein(m, v, derivatives, coeff_v);
@@ -904,7 +907,7 @@ QString MyViewer::helpString() const {
                "<li>&nbsp;F: Fair mesh</li>"
                "<li>&nbsp;U: Elevate U degree (Bézier surface)</li>"
                "<li>&nbsp;V: Elevate V degree (Bézier surface)</li>"
-               "<li>&nbsp;T: Change to trigonometric basis (only odd degrees)</li>"
+               "<li>&nbsp;T: Change to trigonometric basis (only even degrees)</li>"
                "<li>&nbsp;B: Change to Bernstein basis</li>"
                "</ul>"
                "<p>There is also a simple selection and movement interface, enabled "
